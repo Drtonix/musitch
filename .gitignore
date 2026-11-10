@@ -1,0 +1,7 @@
+.build/
+*.icns
+musitch.iconset/
+musitch.app/
+prototype-py/.venv/
+prototype-py/__pycache__/
+.DS_Store

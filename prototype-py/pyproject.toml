@@ -1,0 +1,13 @@
+[project]
+name = "musitch"
+version = "0.1.0"
+description = "Ретровейв-станция для глитча и экспериментального звука"
+requires-python = ">=3.12"
+dependencies = [
+    "PySide6>=6.8",
+    "numpy>=2.0",
+    "soundfile>=0.12",
+]
+
+[tool.uv]
+package = false
