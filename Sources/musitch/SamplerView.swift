@@ -86,28 +86,28 @@ struct SamplerPanel: View {
                 }
                 .frame(height: 76)
 
-                // параметры
-                HStack(spacing: 16) {
-                    PitchSlider(label: "PITCH",
-                                value: Binding(
-                                    get: { Double(sampler.pitchSemis) },
-                                    set: { sampler.pitchSemis = Int($0) }),
-                                range: -24...24, step: 1, unit: "st")
-                    PitchSlider(label: "SPEED",
-                                value: Binding(
-                                    get: { Double(sampler.speed) },
-                                    set: { sampler.speed = Float($0) }),
-                                range: 0.25...4, step: nil, unit: "×")
-                    PitchSlider(label: "TWIST",
-                                value: Binding(
-                                    get: { Double(sampler.twist) },
-                                    set: { sampler.twist = Float($0) }),
-                                range: -1...1, step: nil, unit: "")
-                    PitchSlider(label: "DRIVE",
-                                value: Binding(
-                                    get: { Double(sampler.drive) },
-                                    set: { sampler.drive = Float($0) }),
-                                range: 0...1, step: nil, unit: "")
+                // параметры — ручки, как у остального железа
+                HStack(spacing: 18) {
+                    Knob(label: "PITCH",
+                         value: Binding(
+                             get: { Double(sampler.pitchSemis) },
+                             set: { sampler.pitchSemis = Int($0) }),
+                         range: -24...24, step: 1, format: "%+.0f st")
+                    Knob(label: "SPEED",
+                         value: Binding(
+                             get: { Double(sampler.speed) },
+                             set: { sampler.speed = Float($0) }),
+                         range: 0.25...4, format: "%.2f×")
+                    Knob(label: "TWIST",
+                         value: Binding(
+                             get: { Double(sampler.twist) },
+                             set: { sampler.twist = Float($0) }),
+                         range: -1...1, format: "%+.2f")
+                    Knob(label: "DRIVE",
+                         value: Binding(
+                             get: { Double(sampler.drive) },
+                             set: { sampler.drive = Float($0) }),
+                         range: 0...1, format: "%.2f")
                     Spacer()
                 }
             }
@@ -182,33 +182,3 @@ struct SamplerPanel: View {
     }
 }
 
-/// Слайдер с подписью и числом (для сэмплера).
-struct PitchSlider: View {
-    let label: String
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-    var step: Double? = nil
-    var unit: String = ""
-
-    var body: some View {
-        VStack(spacing: 3) {
-            Text(label)
-                .font(monoFont(10, .regular))
-                .foregroundStyle(Color.muted)
-            if let step {
-                Slider(value: $value, in: range, step: step)
-                    .tint(Color.txt)
-                    .controlSize(.small)
-                    .frame(width: 130)
-            } else {
-                Slider(value: $value, in: range)
-                    .tint(Color.txt)
-                    .controlSize(.small)
-                    .frame(width: 130)
-            }
-            Text("\(String(format: value.truncatingRemainder(dividingBy: 1) == 0 ? "%.0f" : "%.2f", value))\(unit)")
-                .font(monoFont(9, .regular))
-                .foregroundStyle(Color.muted)
-        }
-    }
-}

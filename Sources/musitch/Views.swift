@@ -1,9 +1,7 @@
-/// musitch — общие UI-элементы: палитра, LED, кнопки, модуль, пиано-ролл.
-/// Семантика цвета как в реальной электронике:
-/// зелёный = включено, красный = выключено/запись, синий = опции/инструменты.
+/// musitch — общие UI-элементы: палитра, LED, кнопки, ручки (knob).
+/// Семантика цвета: зелёный = вкл, красный = выкл/запись, синий = опции.
+/// Все регуляторы — ручки с вертикальным драгом (ползунки убраны: глючили).
 import SwiftUI
-
-// MARK: - Палитра (ЧБ + LED-акценты)
 
 extension Color {
     static let bg = Color(red: 5 / 255, green: 5 / 255, blue: 5 / 255)
@@ -20,7 +18,7 @@ let monoFont: (CGFloat, Font.Weight) -> Font = { size, weight in
     .system(size: size, weight: weight, design: .monospaced)
 }
 
-// MARK: - Светодиод
+// MARK: - Светодиоды
 
 struct Led: View {
     var color: Color
@@ -36,7 +34,6 @@ struct Led: View {
     }
 }
 
-/// LED состояния: зелёный когда включено, красный когда выключено.
 struct StateLed: View {
     var on: Bool
     var size: CGFloat = 8
@@ -48,7 +45,6 @@ struct StateLed: View {
 
 // MARK: - Кнопки
 
-/// Транспортная кнопка: активное состояние заливается своим цветом.
 struct TransportButton: ButtonStyle {
     var active: Bool
     var color: Color
@@ -67,7 +63,6 @@ struct TransportButton: ButtonStyle {
     }
 }
 
-/// Опционная кнопка (инструменты/действия) — синий акцент.
 struct OptionButton: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -97,35 +92,87 @@ struct Panel<Content: View>: View {
     }
 }
 
-// MARK: - Строка параметра со слайдером
+// MARK: - Ручка (вертикальный драг, всегда работает)
 
-struct ParamRow: View {
-    let name: String
+struct Knob: View {
+    let label: String
     @Binding var value: Double
+    var range: ClosedRange<Double> = 0...1
+    var step: Double? = nil
+    var format: String = "%.2f"
+    var size: CGFloat = 34
+    var showValue = true
+    @State private var dragBase: Double? = nil
+
+    private var norm: Double {
+        (value - range.lowerBound) / (range.upperBound - range.lowerBound)
+    }
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(name)
-                .font(monoFont(10, .regular))
+        VStack(spacing: 2) {
+            Text(label)
+                .font(monoFont(9, .regular))
                 .foregroundStyle(Color.muted)
-                .frame(width: 56, alignment: .leading)
-            Slider(value: $value)
-                .tint(Color.txt)
-                .controlSize(.small)
+            Canvas { ctx, canvasSize in
+                let d = min(canvasSize.width, canvasSize.height) - 4
+                let c = CGPoint(x: canvasSize.width / 2,
+                                y: canvasSize.height / 2)
+                let r = d / 2
+                var arc = Path()
+                arc.addArc(center: c, radius: r,
+                           startAngle: .degrees(135),
+                           endAngle: .degrees(405), clockwise: false)
+                ctx.stroke(arc, with: .color(Color(white: 0.22)),
+                           lineWidth: 2.5)
+                var act = Path()
+                act.addArc(center: c, radius: r,
+                           startAngle: .degrees(135),
+                           endAngle: .degrees(135 + 270 * norm),
+                           clockwise: false)
+                ctx.stroke(act, with: .color(Color.txt), lineWidth: 2.5)
+                let ang = (135 + 270 * norm) * .pi / 180
+                var tickMark = Path()
+                tickMark.move(to: CGPoint(x: c.x + cos(ang) * r * 0.45,
+                                          y: c.y + sin(ang) * r * 0.45))
+                tickMark.addLine(to: CGPoint(x: c.x + cos(ang) * r * 0.92,
+                                             y: c.y + sin(ang) * r * 0.92))
+                ctx.stroke(tickMark, with: .color(Color.txt), lineWidth: 2)
+            }
+            .frame(width: size, height: size)
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { v in
+                    let base = dragBase ?? value
+                    if dragBase == nil { dragBase = value }
+                    let span = range.upperBound - range.lowerBound
+                    var nv = base + Double(-v.translation.height) / 120 * span
+                    nv = min(max(nv, range.lowerBound), range.upperBound)
+                    if let step {
+                        nv = (nv / step).rounded() * step
+                        nv = min(max(nv, range.lowerBound),
+                                 range.upperBound)
+                    }
+                    value = nv
+                }
+                .onEnded { _ in dragBase = nil })
+            if showValue {
+                Text(String(format: format, value))
+                    .font(monoFont(8, .regular))
+                    .foregroundStyle(Color.muted)
+            }
         }
     }
 }
 
-// MARK: - Модуль-источник
+// MARK: - Модуль текстуры (ручки вместо слайдеров)
 
-struct ModuleView: View {
+struct TextureView: View {
     @ObservedObject var src: Source
     var p1name: String
     var p2name: String
 
     var body: some View {
         Panel {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text(src.title)
                         .font(monoFont(11, .bold))
@@ -133,91 +180,23 @@ struct ModuleView: View {
                     Spacer()
                     StateLed(on: src.on)
                     Button { src.on.toggle() } label: {
-                        Text(src.on ? "ON" : "OFF")
-                            .frame(width: 34)
+                        Text(src.on ? "ON" : "OFF").frame(width: 34)
                     }
                     .buttonStyle(TransportButton(active: src.on,
                                                  color: .ledG))
                 }
-                ParamRow(name: p1name, value: Binding(
-                    get: { Double(src.p1) }, set: { src.p1 = Float($0) }))
-                if p2name != "—" {
-                    ParamRow(name: p2name, value: Binding(
-                        get: { Double(src.p2) }, set: { src.p2 = Float($0) }))
+                HStack(spacing: 14) {
+                    Knob(label: p1name, value: Binding(
+                        get: { Double(src.p1) },
+                        set: { src.p1 = Float($0) }), showValue: false)
+                    if p2name != "—" {
+                        Knob(label: p2name, value: Binding(
+                            get: { Double(src.p2) },
+                            set: { src.p2 = Float($0) }), showValue: false)
+                    }
+                    Spacer()
                 }
             }
         }
-    }
-}
-
-// MARK: - Пиано-ролл (16 шагов × 13 нот C4..C5)
-
-private let seqNames = ["C5", "B4", "A#4", "A4", "G#4", "G4", "F#4",
-                        "F4", "E4", "D#4", "D4", "C#4", "C4"]
-
-private func drawSeqGrid(_ ctx: inout GraphicsContext,
-                         engine: Engine, cell: CGFloat, rows: Int) {
-    let cur = engine.seq.currentStep
-    let labelFont = monoFont(9, .regular)
-    let sounding = engine.chip.activeMask
-    for row in 0..<rows {
-        let midi = 72 - row
-        let lit = (midi >= 60 && midi <= 124)
-            && (sounding & (UInt64(1) << UInt64(midi - 60))) != 0
-        let label = Text(seqNames[row]).font(labelFont)
-            .foregroundColor(lit ? .ledG : .muted)
-        ctx.draw(label, at: CGPoint(x: 20,
-                                    y: 3 + CGFloat(row) * cell + cell / 2))
-    }
-    for s in 0..<engine.seq.steps {
-        let isCur = s == cur
-        for row in 0..<rows {
-            let x = 56 + CGFloat(s) * cell
-            let y = 3 + CGFloat(row) * cell
-            let rect = CGRect(x: x, y: y, width: cell - 2, height: cell - 2)
-            let path = Path(rect)
-            ctx.fill(path, with: .color(Color(white: isCur ? 0.16 : 0.09)))
-            ctx.stroke(path,
-                       with: .color(isCur ? .white.opacity(0.55)
-                                          : Color(white: 0.2)),
-                       lineWidth: 1)
-            if engine.seq.contains(s, 72 - row) {
-                ctx.fill(Path(rect.insetBy(dx: 2, dy: 2)),
-                         with: .color(isCur ? .ledG : Color.txt))
-            }
-        }
-    }
-}
-
-struct SeqGridView: View {
-    let engine: Engine
-    let cell: CGFloat = 22
-    let rows = 13
-    @State private var tick = 0
-    private let timer = Timer.publish(every: 0.05, on: .main,
-                                      in: .common).autoconnect()
-
-    var body: some View {
-        Canvas { ctx, _ in
-            _ = tick
-            var c = ctx
-            drawSeqGrid(&c, engine: engine, cell: cell, rows: rows)
-        }
-        .frame(width: 56 + 16 * cell, height: 3 + 13 * cell + 3)
-        .contentShape(Rectangle())
-        .onReceive(timer) { _ in tick &+= 1 }
-        .gesture(SpatialTapGesture().onEnded { v in
-            let s = Int((v.location.x - 56) / cell)
-            let row = Int((v.location.y - 3) / cell)
-            if (0..<16).contains(s), (0..<13).contains(row) {
-                let midi = 72 - row
-                let wasOn = engine.seq.contains(s, midi)
-                engine.seq.toggle(s, midi)
-                if !wasOn {
-                    // мгновенное превью ноты при постановке
-                    engine.chip.noteOn(midi: midi, dur: 0.3)
-                }
-            }
-        })
     }
 }

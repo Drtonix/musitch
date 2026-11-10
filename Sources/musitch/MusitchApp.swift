@@ -1,5 +1,5 @@
-/// musitch — ретровейв-станция для глитча и экспериментального звука.
-/// Точка входа + главный экран.
+/// musitch — станция чиптюна и глитча: эмуляторы GB/NES/Genesis/SMS,
+/// пиано-ролл на 14 каналов, сэмплер, текстуры, FX, запись.
 import SwiftUI
 
 @main
@@ -10,50 +10,83 @@ struct MusitchApp: App {
         WindowGroup("musitch") {
             ContentView()
                 .environmentObject(engine)
-                .frame(minWidth: 1120, minHeight: 940)
+                .frame(minWidth: 1180, minHeight: 960)
                 .background(Color.bg)
         }
     }
 }
 
+/// демо-рифф для MUSITCH_DEMO / MUSITCH_RENDER
+func loadDemoSong(_ e: Engine) {
+    let ch = e.seq.channels
+    ch[0].notes = [Note(step: 0, midi: 72, len: 2), Note(step: 4, midi: 76, len: 2),
+                   Note(step: 8, midi: 79, len: 2), Note(step: 12, midi: 76, len: 2),
+                   Note(step: 14, midi: 74, len: 2)]
+    ch[2].notes = [Note(step: 0, midi: 36, len: 4), Note(step: 4, midi: 43, len: 4),
+                   Note(step: 8, midi: 41, len: 4), Note(step: 12, midi: 43, len: 4)]
+    ch[6].notes = [Note(step: 0, midi: 48, len: 3), Note(step: 8, midi: 45, len: 3)]
+    ch[7].notes = [Note(step: 4, midi: 84, len: 1), Note(step: 12, midi: 84, len: 1)]
+    ch[8].notes = [Note(step: 2, midi: 69, len: 2), Note(step: 10, midi: 67, len: 2)]
+    ch[10].notes = [Note(step: 0, midi: 60, len: 1), Note(step: 2, midi: 64, len: 1),
+                    Note(step: 4, midi: 67, len: 1), Note(step: 6, midi: 71, len: 1),
+                    Note(step: 8, midi: 72, len: 1)]
+}
+
 struct ContentView: View {
     @EnvironmentObject var engine: Engine
-    @State private var status = "нажми ▶ PLAY — это общий транспорт всего звука"
+    @State private var status = "нажми ▶ PLAY — транспорт всего звука"
     @State private var stutterHeld = false
+    @State private var texOpen = false
 
-    private let paramNames: [String: (String, String)] = [
+    private let texParams: [String: (String, String)] = [
         "NOISE": ("TONE", "—"), "BUZZ": ("HUM", "SPARK"),
         "GLITCH": ("DENSITY", "REPEAT"), "TAPE": ("WEAR", "WOW"),
         "TV": ("RATE", "PITCH"), "DRIVE": ("DRIVE", "NOTE"),
-        "SUB": ("FREQ", "BEAT"), "CHIP": ("DUTY", "VIB"),
+        "SUB": ("FREQ", "BEAT"),
     ]
 
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
                 header
-
                 HStack(spacing: 10) {
                     ScopeView(engine: engine)
                     SpectrumView(engine: engine)
                 }
                 .frame(height: 140)
 
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(),
-                                                             spacing: 8),
-                                         count: 4), spacing: 8) {
-                    ForEach(Array(engine.sources.enumerated()),
-                            id: \.offset) { _, src in
-                        let names = paramNames[src.title] ?? ("P1", "P2")
-                        ModuleView(src: src,
-                                   p1name: names.0, p2name: names.1)
-                    }
+                HStack(spacing: 10) {
+                    GBPanel(e: engine)
+                    NESPanel(e: engine)
+                }
+                HStack(spacing: 10) {
+                    GENPanel(e: engine)
+                    SMSPanel(e: engine)
                 }
 
+                PianoRollView(engine: engine)
                 SamplerPanel(sampler: engine.sampler)
-
                 fxPanel
-                seqPanel
+
+                DisclosureGroup(isExpanded: $texOpen) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(),
+                                                                 spacing: 8),
+                                             count: 4), spacing: 8) {
+                        ForEach(Array(engine.textures.enumerated()),
+                                id: \.offset) { _, src in
+                            let names = texParams[src.title] ?? ("P1", "P2")
+                            TextureView(src: src,
+                                        p1name: names.0, p2name: names.1)
+                        }
+                    }
+                    .padding(.top, 8)
+                } label: {
+                    Text("ТЕКСТУРЫ (NOISE · BUZZ · GLITCH · TAPE · TV · DRIVE · SUB)")
+                        .font(monoFont(11, .regular))
+                        .tracking(3)
+                        .foregroundStyle(Color.muted)
+                }
+                .tint(Color.muted)
 
                 HStack {
                     Text(status)
@@ -66,14 +99,18 @@ struct ContentView: View {
         }
         .background(Color.bg)
         .task {
-            // скрытый демо-режим для автопроверки: MUSITCH_DEMO=1
-            if ProcessInfo.processInfo.environment["MUSITCH_DEMO"] == "1" {
-                engine.sources.first { $0.title == "NOISE" }?.on = true
-                engine.sources.first { $0.title == "DRIVE" }?.on = true
-                engine.seq.toggle(0, 72)
-                engine.seq.toggle(4, 67)
-                engine.seq.toggle(8, 64)
-                engine.seq.toggle(12, 60)
+            let env = ProcessInfo.processInfo.environment
+            if let path = env["MUSITCH_RENDER"] {
+                loadDemoSong(engine)
+                engine.playing = true
+                let audio = engine.renderOffline(6)
+                try? Exporter.writeWav(audio,
+                                       to: URL(fileURLWithPath: path))
+                print("rendered:", path)
+                exit(0)
+            }
+            if env["MUSITCH_DEMO"] == "1" {
+                loadDemoSong(engine)
                 engine.playing = true
             }
         }
@@ -87,7 +124,7 @@ struct ContentView: View {
                 Text("MUSITCH")
                     .font(monoFont(20, .bold))
                     .tracking(4)
-                Text("GLITCH · TAPE · 8BIT · NOISE")
+                Text("GB · NES · GENESIS · SMS · SAMPLER")
                     .font(monoFont(10, .regular))
                     .tracking(2)
                     .foregroundStyle(Color.muted)
@@ -126,58 +163,42 @@ struct ContentView: View {
 
     private var fxPanel: some View {
         Panel {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 16) {
-                    Text("FX")
-                        .font(monoFont(11, .regular))
-                        .tracking(3)
+            HStack(spacing: 14) {
+                Text("FX")
+                    .font(monoFont(11, .regular))
+                    .tracking(3)
+                    .foregroundStyle(Color.muted)
+                Knob(label: "CRUSH", value: Binding(
+                    get: { Double(engine.fx.crush) },
+                    set: { engine.fx.crush = Float($0) }))
+                Knob(label: "DIST", value: Binding(
+                    get: { Double(engine.fx.dist) },
+                    set: { engine.fx.dist = Float($0) }))
+                Knob(label: "CUTOFF", value: Binding(
+                    get: { Double(engine.fx.cutoff) },
+                    set: { engine.fx.cutoff = Float($0) }))
+                Knob(label: "RESO", value: Binding(
+                    get: { Double(engine.fx.reso) },
+                    set: { engine.fx.reso = Float($0) }))
+                Knob(label: "V·SPEED", value: Binding(
+                    get: { Double(engine.fx.varispeed) },
+                    set: { engine.fx.varispeed = Float($0) }),
+                     range: -1...1, format: "%+.2f")
+                Knob(label: "DLY·MIX", value: Binding(
+                    get: { Double(engine.fx.delayMix) },
+                    set: { engine.fx.delayMix = Float($0) }))
+                Knob(label: "DLY·TIME", value: Binding(
+                    get: { Double(engine.fx.delayTime) },
+                    set: { engine.fx.delayTime = Float($0) }),
+                     range: 0.05...1.2, format: "%.2f")
+                Knob(label: "DLY·F/B", value: Binding(
+                    get: { Double(engine.fx.delayFb) },
+                    set: { engine.fx.delayFb = Float($0) }))
+                VStack(spacing: 2) {
+                    Text("STUTTER")
+                        .font(monoFont(9, .regular))
                         .foregroundStyle(Color.muted)
-                    FXSlider(label: "BITCRUSH", value: Binding(
-                        get: { Double(engine.fx.crush) },
-                        set: { engine.fx.crush = Float($0) }))
-                    FXSlider(label: "DISTORT", value: Binding(
-                        get: { Double(engine.fx.dist) },
-                        set: { engine.fx.dist = Float($0) }))
-                    FXSlider(label: "CUTOFF", value: Binding(
-                        get: { Double(engine.fx.cutoff) },
-                        set: { engine.fx.cutoff = Float($0) }))
-                    FXSlider(label: "RESO", value: Binding(
-                        get: { Double(engine.fx.reso) },
-                        set: { engine.fx.reso = Float($0) }))
-                    FXSlider(label: "VARISPEED", value: Binding(
-                        get: { Double(engine.fx.varispeed) },
-                        set: { engine.fx.varispeed = Float($0) }),
-                             range: -1...1, format: "%+.2f")
-                    Spacer()
-                    Text("MASTER")
-                        .font(monoFont(10, .regular))
-                        .foregroundStyle(Color.muted)
-                    Slider(value: Binding(
-                        get: { Double(engine.master) },
-                        set: { engine.master = Float($0) }))
-                    .tint(Color.txt)
-                    .controlSize(.small)
-                    .frame(width: 110)
-                }
-                HStack(spacing: 16) {
-                    FXSlider(label: "DELAY MIX", value: Binding(
-                        get: { Double(engine.fx.delayMix) },
-                        set: { engine.fx.delayMix = Float($0) }))
-                    FXSlider(label: "DELAY TIME", value: Binding(
-                        get: { Double(engine.fx.delayTime) },
-                        set: { engine.fx.delayTime = Float($0) }),
-                             range: 0.05...1.2, format: "%.2f s")
-                    FXSlider(label: "DELAY F/B", value: Binding(
-                        get: { Double(engine.fx.delayFb) },
-                        set: { engine.fx.delayFb = Float($0) }))
-                    VStack(spacing: 3) {
-                        Text("STUTTER")
-                            .font(monoFont(10, .regular))
-                            .foregroundStyle(Color.muted)
-                        Button(action: {}) {
-                            Text("◼ ДЕРЖИ")
-                                .padding(.horizontal, 6)
-                        }
+                    Button(action: {}) { Text("◼ ДЕРЖИ") }
                         .buttonStyle(TransportButton(active: stutterHeld,
                                                      color: .ledB))
                         .simultaneousGesture(
@@ -190,53 +211,12 @@ struct ContentView: View {
                                     stutterHeld = false
                                     engine.fx.stutter = false
                                 })
-                        Text("холд")
-                            .font(monoFont(9, .regular))
-                            .foregroundStyle(Color.muted)
-                    }
-                    Spacer()
                 }
+                Spacer()
+                Knob(label: "MASTER", value: Binding(
+                    get: { Double(engine.master) },
+                    set: { engine.master = Float($0) }), size: 44)
             }
-        }
-    }
-
-    // ---------------------------------------------------------- секвенсор
-
-    private var seqPanel: some View {
-        Panel {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("8-BIT СЕКВЕНСОР — CHIP")
-                    .font(monoFont(11, .regular))
-                    .tracking(3)
-                    .foregroundStyle(Color.muted)
-                HStack {
-                    Spacer()
-                    SeqGridView(engine: engine)
-                    Spacer()
-                }
-            }
-        }
-    }
-}
-
-struct FXSlider: View {
-    let label: String
-    @Binding var value: Double
-    var range: ClosedRange<Double> = 0...1
-    var format: String = "%.2f"
-
-    var body: some View {
-        VStack(spacing: 3) {
-            Text(label)
-                .font(monoFont(10, .regular))
-                .foregroundStyle(Color.muted)
-            Slider(value: $value, in: range)
-                .tint(Color.txt)
-                .controlSize(.small)
-                .frame(width: 130)
-            Text(String(format: format, value))
-                .font(monoFont(9, .regular))
-                .foregroundStyle(Color.muted)
         }
     }
 }

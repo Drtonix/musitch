@@ -1,12 +1,9 @@
-/// musitch — DSP-движок: генераторы глитча, сэмплер, эффекты, секвенсор.
-/// Источники пишут моно-блок, движок суммирует в стерео → FX → лимитер →
-/// транспортный гейт (STOP = тишина).
+/// musitch — DSP-движок: текстуры, чипы, сэмплер, эффекты, секвенсор, микшер.
+/// renderBlock(n) наполняет mixL/mixR; аудио-колбэк и офлайн-рендер делят его.
 import AVFoundation
 import Accelerate
 
-let SR: Double = 44100
-
-// MARK: - Источники
+// MARK: - Текстуры (шумовые генераторы-фактуры)
 
 class Source: ObservableObject {
     let title: String
@@ -15,11 +12,9 @@ class Source: ObservableObject {
     var p1: Float = 0.5
     var p2: Float = 0.5
     init(_ title: String) { self.title = title }
-    /// перезаписать buf[0..<n] своим сигналом (без level — его приложит движок)
     func render(into buf: UnsafeMutableBufferPointer<Float>, n: Int) {}
 }
 
-/// Белый шум через однополюсный фильтр. p1 — тон.
 final class NoiseSrc: Source {
     private var mem: Float = 0
     override func render(into buf: UnsafeMutableBufferPointer<Float>, n: Int) {
@@ -35,7 +30,6 @@ final class NoiseSrc: Source {
     }
 }
 
-/// Электричество: 50 Гц + гармоники. p2 — треск/искры.
 final class BuzzSrc: Source {
     private var ph: [Float] = [0, 0, 0, 0, 0]
     private let harms: [Float] = [1, 2, 3, 5, 7]
@@ -59,7 +53,6 @@ final class BuzzSrc: Source {
     }
 }
 
-/// Статтер: дробит несущую на куски. p1 — плотность, p2 — повторы.
 final class GlitchSrc: Source {
     private var buf = [Float](repeating: 0, count: 4096)
     private var len = 1
@@ -107,7 +100,6 @@ final class GlitchSrc: Source {
     }
 }
 
-/// Кассета: дрон 110 Гц с wow/flutter + шипение + треск. p1 — износ, p2 — расстройка.
 final class TapeSrc: Source {
     private var wowPh: Float = 0
     private var dronePh: Float = 0
@@ -129,7 +121,6 @@ final class TapeSrc: Source {
     }
 }
 
-/// Кнопки старого телевизора: щелчки + затухающие писки. p1 — частота, p2 — высота.
 final class TVSrc: Source {
     private var buf = [Float](repeating: 0, count: 8192)
     private var len = 0
@@ -157,7 +148,6 @@ final class TVSrc: Source {
     }
 }
 
-/// Чистый перегруз: стек пил через tanh. p1 — драйв, p2 — нота (A0..A4).
 final class DriveSrc: Source {
     private var ph: [Float] = [0, 0, 0]
     private let mult: [Float] = [1.0, 1.005, 0.5]
@@ -177,7 +167,6 @@ final class DriveSrc: Source {
     }
 }
 
-/// Саб-дрон: глубокий синус с биением. p1 — частота, p2 — биение.
 final class SubSrc: Source {
     private var ph: Float = 0
     private var lfoPh: Float = 0
@@ -196,304 +185,36 @@ final class SubSrc: Source {
     }
 }
 
-// MARK: - Чип-синт
-
-struct ChipVoice {
-    var freq: Float
-    var midi: Int
-    var t: Int
-    var dur: Int
-    var duty: Float
-    var amp: Float = 0.5
-}
-
-/// 8-бит канал: квадрат с регулируемой скважностью, играет секвенсор.
-/// Потокобезопасный запуск нот (pending-очередь), битовая маска звучащих нот
-/// для подсветки пиано-ролла.
-final class ChipSrc: Source {
-    private var voices: [ChipVoice] = []
-    private var pending: [ChipVoice] = []
-    private let lock = NSLock()
-    /// бит (midi - 60) = нота звучит прямо сейчас
-    private(set) var activeMask: UInt64 = 0
-
-    override init(_ title: String) {
-        super.init(title)
-        on = true
-    }
-
-    func noteOn(midi: Int, dur: Float) {
-        let f = 440 * powf(2, Float(midi - 69) / 12)
-        let v = ChipVoice(freq: f, midi: midi, t: 0,
-                          dur: Int(dur * Float(SR)),
-                          duty: 0.1 + p1 * 0.4)
-        lock.lock()
-        pending.append(v)
-        lock.unlock()
-    }
-
-    override func render(into out: UnsafeMutableBufferPointer<Float>, n: Int) {
-        lock.lock()
-        if !pending.isEmpty {
-            voices.append(contentsOf: pending)
-            pending.removeAll()
-        }
-        lock.unlock()
-
-        var mask: UInt64 = 0
-        defer { activeMask = mask }
-        guard !voices.isEmpty else { return }
-
-        let sr = Float(SR)
-        var alive = 0
-        for vi in voices.indices {
-            var v = voices[vi]
-            let left = v.dur - v.t
-            if left <= 0 { continue }
-            let m = min(n, left)
-            var ph: Float = 0
-            let vib = p2 > 0.55
-            for i in 0..<m {
-                var f = v.freq
-                if vib {
-                    let tt = Float(v.t + i) / sr
-                    f = v.freq * (1 + 0.02 * sin(2 * .pi * 8 * tt))
-                }
-                ph += f / sr
-                let frac = ph - ph.rounded(.down)
-                let sq: Float = frac < v.duty ? 1 : -1
-                let pr = m > 1 ? Float(i) / Float(m - 1) : 0
-                let env = min(1, powf(1 - pr, 0.3) + 0.15)
-                out[i] += sq * env * v.amp * 0.4
-            }
-            v.t += m
-            voices[alive] = v
-            alive += 1
-            if (60...124).contains(v.midi) {
-                mask |= UInt64(1) << UInt64(v.midi - 60)
-            }
-        }
-        if alive < voices.count {
-            voices.removeLast(voices.count - alive)
-        }
-    }
-}
-
-// MARK: - Сэмплер
-
-struct SamplerVoice {
-    var pos: Double
-    var rate0: Double
-    var t: Int
-}
-
-/// Свой звук: файл → выделенный фрагмент → питч/скорость/закрутка/драйв.
-/// Управление потоками: data заменяется целиком (snapshot), триггеры — через
-/// pending под замком, playPos — одно слово для визуализации.
-final class SamplerSrc: Source {
-    @Published var name = "—"
-    private(set) var data: [Float] = []
-    var selStart = 0
-    var selEnd = 0
-    var loop = false
-    var pitchSemis: Int = 0        // -24..+24, округлённые полутоны
-    var speed: Float = 1           // 0.25..4
-    var twist: Float = 0           // -1..+1 закрутка (питч-рамп по фрагменту)
-    var drive: Float = 0
-    private(set) var playPos = -1  // для плейхеда в waveform
-
-    private var voices: [SamplerVoice] = []
-    private var pending = 0
-    private let lock = NSLock()
-
-    var loaded: Bool { !data.isEmpty }
-    var duration: Double { Double(data.count) / SR }
-
-    // ------------------------------------------------ загрузка
-
-    func load(_ url: URL) throws {
-        let file = try AVAudioFile(forReading: url)
-        let srcFmt = file.processingFormat
-        let maxFrames = AVAudioFramePosition(SR) * 60   // не более минуты
-        let frames = AVAudioFrameCount(min(file.length, maxFrames))
-        guard frames > 0 else {
-            throw NSError(domain: "musitch", code: -1,
-                          userInfo: [NSLocalizedDescriptionKey: "пустой файл"])
-        }
-        let dstFmt = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                   sampleRate: SR,
-                                   channels: srcFmt.channelCount,
-                                   interleaved: false)!
-        guard let conv = AVAudioConverter(from: srcFmt, to: dstFmt) else {
-            throw NSError(domain: "musitch", code: -2,
-                          userInfo: [NSLocalizedDescriptionKey: "не могу сконвертировать"])
-        }
-        guard let srcBuf = AVAudioPCMBuffer(pcmFormat: srcFmt,
-                                            frameCapacity: frames) else { return }
-        try file.read(into: srcBuf, frameCount: frames)
-        let ratio = SR / srcFmt.sampleRate
-        let outCap = AVAudioFrameCount(Double(srcBuf.frameLength) * ratio) + 1024
-        guard let dstBuf = AVAudioPCMBuffer(pcmFormat: dstFmt,
-                                            frameCapacity: outCap) else { return }
-        var err: NSError?
-        var consumed = false
-        conv.convert(to: dstBuf, error: &err) { _, status in
-            if consumed {
-                status.pointee = .endOfStream
-                return nil
-            }
-            consumed = true
-            status.pointee = .haveData
-            return srcBuf
-        }
-        if let err { throw err }
-        let ch = Int(dstFmt.channelCount)
-        let count = Int(dstBuf.frameLength)
-        var mono = [Float](repeating: 0, count: count)
-        if let channels = dstBuf.floatChannelData {
-            for c in 0..<ch {
-                let p = channels[c]
-                for i in 0..<count { mono[i] += p[i] / Float(ch) }
-            }
-        }
-        data = mono
-        selStart = 0
-        selEnd = count
-        voices = []
-        playPos = -1
-        DispatchQueue.main.async {
-            self.name = url.deletingPathExtension().lastPathComponent
-        }
-    }
-
-    // ------------------------------------------------ обработка фрагмента
-
-    func reverseSelection() {
-        guard loaded else { return }
-        var d = data
-        let s0 = selStart, s1 = max(selEnd, selStart + 1)
-        d[s0..<s1].reverse()
-        data = d
-    }
-
-    func normalizeSelection() {
-        guard loaded else { return }
-        var d = data
-        let s0 = selStart, s1 = max(selEnd, selStart + 1)
-        var peak: Float = 0
-        for i in s0..<s1 { peak = max(peak, abs(d[i])) }
-        guard peak > 1e-6 else { return }
-        let g = 0.95 / peak
-        for i in s0..<s1 { d[i] *= g }
-        data = d
-    }
-
-    // ------------------------------------------------ запуск
-
-    func trigger() {
-        guard loaded else { return }
-        lock.lock()
-        pending += 1
-        lock.unlock()
-    }
-
-    // ------------------------------------------------ рендер
-
-    override func render(into out: UnsafeMutableBufferPointer<Float>, n: Int) {
-        lock.lock()
-        if pending > 0 {
-            let rate = Double(powf(2, Float(pitchSemis) / 12) * speed)
-            for _ in 0..<pending {
-                voices.append(SamplerVoice(pos: Double(selStart),
-                                           rate0: rate, t: 0))
-            }
-            pending = 0
-        }
-        lock.unlock()
-
-        let d = data
-        if voices.isEmpty || d.isEmpty {
-            playPos = -1
-            return
-        }
-        let s0 = selStart
-        let s1 = max(selEnd, selStart + 256)
-        let total = Double(s1 - s0)
-
-        var alive = 0
-        for vi in voices.indices {
-            var v = voices[vi]
-            var dead = false
-            for i in 0..<n {
-                if v.pos >= Double(s1) || Int(v.pos) + 1 >= d.count {
-                    if loop {
-                        v.pos = Double(s0)
-                            + (v.pos - Double(s0)).truncatingRemainder(dividingBy: total)
-                    } else {
-                        dead = true
-                        break
-                    }
-                }
-                let prog = (v.pos - Double(s0)) / total
-                // закрутка: twist>0 раскручивает вверх к концу, <0 — вниз
-                let rate = v.rate0 * pow(2.0, Double(twist) * 2.0 * (prog * 2 - 1))
-                let p0 = Int(v.pos)
-                let fr = Float(v.pos - Double(p0))
-                var s = d[p0] * (1 - fr) + d[p0 + 1] * fr
-                let fade = min(1, Float(v.t) / 128)   // защита от щелчка
-                if drive > 0.01 { s = tanhf(s * (1 + drive * 10)) }
-                out[i] += s * fade
-                v.pos += max(rate, 0.01)
-                v.t += 1
-            }
-            if !dead {
-                voices[alive] = v
-                alive += 1
-            }
-        }
-        if alive < voices.count {
-            voices.removeLast(voices.count - alive)
-        }
-        playPos = voices.first.map { Int($0.pos) } ?? -1
-    }
-}
-
 // MARK: - Эффекты
 
-/// Мастер-цепочка: bitcrush → distortion → delay → фильтр (biquad LP
-/// с резонансом) → вариспид → статтер-холд.
 final class FX {
-    var crush: Float = 0          // 0..1 → битность 16..4
+    var crush: Float = 0
     var dist: Float = 0
     var delayMix: Float = 0
-    var delayTime: Float = 0.35   // секунды
+    var delayTime: Float = 0.35
     var delayFb: Float = 0.45
-    var cutoff: Float = 1         // 1 = открыт
+    var cutoff: Float = 1
     var reso: Float = 0
-    var varispeed: Float = 0      // -1..+1 октавы
-    var stutter = false           // держать — зацикливает последний шаг
+    var varispeed: Float = 0
+    var stutter = false
     var stepSamples: Double = Double(SR) * 60 / 128 / 4
 
-    // delay
     private var dlL = [Float](repeating: 0, count: Int(SR * 2))
     private var dlR = [Float](repeating: 0, count: Int(SR * 2))
     private var dlW = 0
 
-    // biquad LP (RBJ)
     private var bq: (b0: Float, b1: Float, b2: Float,
                      a1: Float, a2: Float) = (1, 0, 0, 0, 0)
     private var bqKey: Float = -1
     private var x1L: Float = 0, x2L: Float = 0, y1L: Float = 0, y2L: Float = 0
     private var x1R: Float = 0, x2R: Float = 0, y1R: Float = 0, y2R: Float = 0
 
-    // varispeed ring
     private var vsL = [Float](repeating: 0, count: 131072)
     private var vsR = [Float](repeating: 0, count: 131072)
     private var vsW = 0
     private var vsRead = 0.0
     private var vsActive = false
 
-    // stutter
     private var stL = [Float](repeating: 0, count: 65536)
     private var stR = [Float](repeating: 0, count: 65536)
     private var stW = 0
@@ -503,7 +224,6 @@ final class FX {
 
     func process(_ L: UnsafeMutableBufferPointer<Float>,
                  _ R: UnsafeMutableBufferPointer<Float>, n: Int) {
-        // --- bitcrush
         if crush > 0.01 {
             let bits = 16 - Int(crush * 12)
             let q = powf(2, Float(bits - 1))
@@ -512,7 +232,6 @@ final class FX {
                 R[i] = (R[i] * q).rounded() / q
             }
         }
-        // --- distortion
         if dist > 0.01 {
             let d = 1 + dist * 20
             for i in 0..<n {
@@ -520,7 +239,6 @@ final class FX {
                 R[i] = tanhf(R[i] * d)
             }
         }
-        // --- delay
         if delayMix > 0.01 {
             let N = dlL.count
             let dly = max(1, min(Int(delayTime * Float(SR)), N - 2))
@@ -537,12 +255,11 @@ final class FX {
                 dlW = (dlW + 1) % N
             }
         }
-        // --- фильтр с резонансом
         if cutoff < 0.995 || reso > 0.01 {
             let key = cutoff * 1000 + reso
             if key != bqKey {
                 bqKey = key
-                let fc = 200 * powf(100, cutoff)          // 200 Гц..20 кГц
+                let fc = 200 * powf(100, cutoff)
                 let Q = 0.5 + reso * 8
                 let w0 = 2 * Float.pi * min(fc, 20000) / Float(SR)
                 let alpha = sin(w0) / (2 * Q)
@@ -564,7 +281,6 @@ final class FX {
                 R[i] = yr
             }
         }
-        // --- вариспид (ускорить/замедлить весь микс, октава в обе стороны)
         if abs(varispeed) > 0.005 {
             let N = vsL.count
             if !vsActive {
@@ -591,7 +307,6 @@ final class FX {
         } else if vsActive {
             vsActive = false
         }
-        // --- статтер-холд: зацикливает последний шаг секвенсора
         let stN = stL.count
         if stutter {
             if !stActive {
@@ -617,59 +332,30 @@ final class FX {
     }
 }
 
-// MARK: - Секвенсор
-
-/// 16 шагов × ноты; крутит Chip. Клетка кодируется step * 256 + midi.
-final class Sequencer {
-    let steps = 16
-    weak var chip: ChipSrc?
-    var bpm: Double = 128
-    var playing = false
-    private(set) var grid = Set<Int>()
-    private var t: Double = 0
-    private var nextStep = 0
-
-    func toggle(_ step: Int, _ midi: Int) {
-        let k = step * 256 + midi
-        if grid.contains(k) { grid.remove(k) } else { grid.insert(k) }
-    }
-
-    func contains(_ step: Int, _ midi: Int) -> Bool {
-        grid.contains(step * 256 + midi)
-    }
-
-    var currentStep: Int {
-        playing ? (nextStep - 1 + steps) % steps : -1
-    }
-
-    func reset() {
-        nextStep = 0
-        t = 0
-    }
-
-    func advance(_ n: Int) {
-        guard playing else { return }
-        let stepDur = 60.0 / bpm / 4
-        let tEnd = t + Double(n) / SR
-        while Double(nextStep) * stepDur < tEnd {
-            let s = nextStep % steps
-            for k in grid where k / 256 == s {
-                chip?.noteOn(midi: k % 256, dur: Float(stepDur * 2))
-            }
-            nextStep += 1
-        }
-        t = tEnd
-    }
-}
-
 // MARK: - Движок
 
 final class Engine: ObservableObject, @unchecked Sendable {
-    let chip = ChipSrc("CHIP")
+    // текстуры
+    let textures: [Source]
+    // чипы
+    let gbP1 = GBPulse(sweep: true)
+    let gbP2 = GBPulse(sweep: false)
+    let gbW = GBWave()
+    let gbN = GBNoise()
+    let nesP1 = NESPulse()
+    let nesP2 = NESPulse()
+    let nesT = NESTri()
+    let nesN = NESNoise()
+    let fm1 = YMChannel()
+    let fm2 = YMChannel()
+    let psg1 = PSGSquare()
+    let psg2 = PSGSquare()
+    let psg3 = PSGSquare()
+    let psgN = PSGNoise()
+    // сэмплер и остальное
     let sampler = SamplerSrc("SAMPLER")
-    let sources: [Source]
     let fx = FX()
-    let seq = Sequencer()
+    let seq = Seq()
 
     var master: Float = 0.9
     @Published var playing = false {
@@ -683,25 +369,39 @@ final class Engine: ObservableObject, @unchecked Sendable {
         didSet { seq.bpm = bpm }
     }
 
-    /// последний отрендеренный блок для визуализаторов (моно-микс L)
     private(set) var lastL = [Float](repeating: 0, count: 1024)
 
-    private var recorded: [Float] = []   // interleaved L/R
+    private var recorded: [Float] = []
     private let recLock = NSLock()
-    private let maxRecord = Int(SR) * 2 * 600   // 10 минут максимум
+    private let maxRecord = Int(SR) * 2 * 600
 
     private var mixL = [Float](repeating: 0, count: 8192)
     private var mixR = [Float](repeating: 0, count: 8192)
     private var scratch = [Float](repeating: 0, count: 8192)
-    private var gate: Float = 0   // транспортный гейт (STOP → 0)
+    private var gate: Float = 0
 
     private var audioEngine: AVAudioEngine?
 
     init() {
-        sources = [NoiseSrc("NOISE"), BuzzSrc("BUZZ"), GlitchSrc("GLITCH"),
-                   TapeSrc("TAPE"), TVSrc("TV"), DriveSrc("DRIVE"),
-                   SubSrc("SUB"), chip]
-        seq.chip = chip
+        textures = [NoiseSrc("NOISE"), BuzzSrc("BUZZ"), GlitchSrc("GLITCH"),
+                    TapeSrc("TAPE"), TVSrc("TV"), DriveSrc("DRIVE"),
+                    SubSrc("SUB")]
+        seq.channels = [
+            Channel(name: "GB·P1", voice: gbP1),
+            Channel(name: "GB·P2", voice: gbP2),
+            Channel(name: "GB·W", voice: gbW),
+            Channel(name: "GB·N", voice: gbN),
+            Channel(name: "NES·P1", voice: nesP1),
+            Channel(name: "NES·P2", voice: nesP2),
+            Channel(name: "NES·TRI", voice: nesT),
+            Channel(name: "NES·N", voice: nesN),
+            Channel(name: "GEN·FM1", voice: fm1),
+            Channel(name: "GEN·FM2", voice: fm2),
+            Channel(name: "SMS·1", voice: psg1),
+            Channel(name: "SMS·2", voice: psg2),
+            Channel(name: "SMS·3", voice: psg3),
+            Channel(name: "SMS·N", voice: psgN),
+        ]
         startAudio()
     }
 
@@ -723,30 +423,23 @@ final class Engine: ObservableObject, @unchecked Sendable {
         audioEngine = eng
     }
 
-    private func render(frameCount: Int,
-                        audioBufferList abl: UnsafeMutablePointer<AudioBufferList>) {
-        var n = frameCount
-        if n > mixL.count {
-            mixL = [Float](repeating: 0, count: n)
-            mixR = [Float](repeating: 0, count: n)
-            scratch = [Float](repeating: 0, count: n)
-        }
-        n = min(n, mixL.count)
-
+    /// общий проход микшера: секвенсор → каналы/текстуры/сэмплер → FX →
+    /// лимитер → транспортный гейт. Результат в mixL/mixR.
+    private func renderBlock(_ n: Int) {
         mixL.withUnsafeMutableBufferPointer { Lp in
             mixR.withUnsafeMutableBufferPointer { Rp in
-                let L = UnsafeMutableBufferPointer(
-                    start: Lp.baseAddress!, count: n)
-                let R = UnsafeMutableBufferPointer(
-                    start: Rp.baseAddress!, count: n)
+                let L = UnsafeMutableBufferPointer(start: Lp.baseAddress!,
+                                                   count: n)
+                let R = UnsafeMutableBufferPointer(start: Rp.baseAddress!,
+                                                   count: n)
                 for i in 0..<n { L[i] = 0; R[i] = 0 }
 
                 seq.advance(n)
 
                 scratch.withUnsafeMutableBufferPointer { sp in
-                    let S = UnsafeMutableBufferPointer(
-                        start: sp.baseAddress!, count: n)
-                    for src in sources where src.on {
+                    let S = UnsafeMutableBufferPointer(start: sp.baseAddress!,
+                                                       count: n)
+                    for src in textures where src.on {
                         for i in 0..<n { S[i] = 0 }
                         src.render(into: S, n: n)
                         let lv = src.level
@@ -756,7 +449,14 @@ final class Engine: ObservableObject, @unchecked Sendable {
                             R[i] += v
                         }
                     }
-                    // сэмплер идёт тем же маршрутом
+                    for ch in seq.channels where !ch.muted && ch.voice.on {
+                        for i in 0..<n { S[i] = 0 }
+                        ch.voice.render(into: S, n: n)
+                        for i in 0..<n {
+                            L[i] += S[i]
+                            R[i] += S[i]
+                        }
+                    }
                     if sampler.on {
                         for i in 0..<n { S[i] = 0 }
                         sampler.render(into: S, n: n)
@@ -777,7 +477,6 @@ final class Engine: ObservableObject, @unchecked Sendable {
                     R[i] = tanhf(R[i] * m)
                 }
 
-                // транспортный гейт: STOP = тишина (сглажено от щелчков)
                 let target: Float = playing ? 1 : 0
                 var g = gate
                 for i in 0..<n {
@@ -788,6 +487,18 @@ final class Engine: ObservableObject, @unchecked Sendable {
                 gate = g
             }
         }
+    }
+
+    private func render(frameCount: Int,
+                        audioBufferList abl: UnsafeMutablePointer<AudioBufferList>) {
+        var n = frameCount
+        if n > mixL.count {
+            mixL = [Float](repeating: 0, count: n)
+            mixR = [Float](repeating: 0, count: n)
+            scratch = [Float](repeating: 0, count: n)
+        }
+        n = min(n, mixL.count)
+        renderBlock(n)
 
         if recording {
             recLock.lock()
@@ -820,7 +531,24 @@ final class Engine: ObservableObject, @unchecked Sendable {
         }
     }
 
-    /// забрать записанное (interleaved) и очистить буфер
+    /// офлайн-рендер для проверки и скрин-экспорта (interleaved)
+    func renderOffline(_ seconds: Double) -> [Float] {
+        let total = Int(seconds * SR)
+        var out: [Float] = []
+        out.reserveCapacity(total * 2)
+        var done = 0
+        while done < total {
+            let n = min(1024, total - done)
+            renderBlock(n)
+            for i in 0..<n {
+                out.append(mixL[i])
+                out.append(mixR[i])
+            }
+            done += n
+        }
+        return out
+    }
+
     func takeRecording() -> [Float] {
         recLock.lock()
         let out = recorded
