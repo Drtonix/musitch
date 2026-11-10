@@ -1,4 +1,6 @@
 /// musitch — общие UI-элементы: палитра, LED, кнопки, модуль, пиано-ролл.
+/// Семантика цвета как в реальной электронике:
+/// зелёный = включено, красный = выключено/запись, синий = опции/инструменты.
 import SwiftUI
 
 // MARK: - Палитра (ЧБ + LED-акценты)
@@ -34,8 +36,19 @@ struct Led: View {
     }
 }
 
-// MARK: - Кнопка-переключатель
+/// LED состояния: зелёный когда включено, красный когда выключено.
+struct StateLed: View {
+    var on: Bool
+    var size: CGFloat = 8
 
+    var body: some View {
+        Led(color: on ? .ledG : .ledR, lit: true, size: size)
+    }
+}
+
+// MARK: - Кнопки
+
+/// Транспортная кнопка: активное состояние заливается своим цветом.
 struct TransportButton: ButtonStyle {
     var active: Bool
     var color: Color
@@ -54,7 +67,22 @@ struct TransportButton: ButtonStyle {
     }
 }
 
-// MARK: - Панель-модификатор
+/// Опционная кнопка (инструменты/действия) — синий акцент.
+struct OptionButton: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(monoFont(12, .regular))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .foregroundStyle(Color.ledB)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4)
+                .stroke(Color.ledB.opacity(0.55), lineWidth: 1))
+            .opacity(configuration.isPressed ? 0.6 : 1)
+    }
+}
+
+// MARK: - Панель
 
 struct Panel<Content: View>: View {
     @ViewBuilder var content: Content
@@ -74,7 +102,6 @@ struct Panel<Content: View>: View {
 struct ParamRow: View {
     let name: String
     @Binding var value: Double
-    var width: CGFloat? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -85,7 +112,6 @@ struct ParamRow: View {
             Slider(value: $value)
                 .tint(Color.txt)
                 .controlSize(.small)
-                .frame(maxWidth: width)
         }
     }
 }
@@ -94,7 +120,6 @@ struct ParamRow: View {
 
 struct ModuleView: View {
     @ObservedObject var src: Source
-    var ledColor: Color
     var p1name: String
     var p2name: String
 
@@ -106,13 +131,13 @@ struct ModuleView: View {
                         .font(monoFont(11, .bold))
                         .tracking(2)
                     Spacer()
-                    Led(color: ledColor, lit: src.on)
+                    StateLed(on: src.on)
                     Button { src.on.toggle() } label: {
                         Text(src.on ? "ON" : "OFF")
                             .frame(width: 34)
                     }
                     .buttonStyle(TransportButton(active: src.on,
-                                                 color: .txt))
+                                                 color: .ledG))
                 }
                 ParamRow(name: p1name, value: Binding(
                     get: { Double(src.p1) }, set: { src.p1 = Float($0) }))
@@ -130,30 +155,35 @@ struct ModuleView: View {
 private let seqNames = ["C5", "B4", "A#4", "A4", "G#4", "G4", "F#4",
                         "F4", "E4", "D#4", "D4", "C#4", "C4"]
 
-private func drawSeqGrid(_ ctx: inout GraphicsContext, size: CGSize,
+private func drawSeqGrid(_ ctx: inout GraphicsContext,
                          engine: Engine, cell: CGFloat, rows: Int) {
     let cur = engine.seq.currentStep
     let labelFont = monoFont(9, .regular)
+    let sounding = engine.chip.activeMask
     for row in 0..<rows {
+        let midi = 72 - row
+        let lit = (midi >= 60 && midi <= 124)
+            && (sounding & (UInt64(1) << UInt64(midi - 60))) != 0
         let label = Text(seqNames[row]).font(labelFont)
-            .foregroundColor(Color.muted)
+            .foregroundColor(lit ? .ledG : .muted)
         ctx.draw(label, at: CGPoint(x: 20,
                                     y: 3 + CGFloat(row) * cell + cell / 2))
     }
     for s in 0..<engine.seq.steps {
+        let isCur = s == cur
         for row in 0..<rows {
             let x = 56 + CGFloat(s) * cell
             let y = 3 + CGFloat(row) * cell
             let rect = CGRect(x: x, y: y, width: cell - 2, height: cell - 2)
             let path = Path(rect)
-            ctx.fill(path, with: .color(Color(white: 0.09)))
-            ctx.stroke(path, with: .color(Color(white: 0.2)), lineWidth: 1)
-            if s == cur {
-                ctx.fill(path, with: .color(.white.opacity(0.07)))
-            }
+            ctx.fill(path, with: .color(Color(white: isCur ? 0.16 : 0.09)))
+            ctx.stroke(path,
+                       with: .color(isCur ? .white.opacity(0.55)
+                                          : Color(white: 0.2)),
+                       lineWidth: 1)
             if engine.seq.contains(s, 72 - row) {
                 ctx.fill(Path(rect.insetBy(dx: 2, dy: 2)),
-                         with: .color(Color.txt))
+                         with: .color(isCur ? .ledG : Color.txt))
             }
         }
     }
@@ -163,22 +193,30 @@ struct SeqGridView: View {
     let engine: Engine
     let cell: CGFloat = 22
     let rows = 13
+    @State private var tick = 0
+    private let timer = Timer.publish(every: 0.05, on: .main,
+                                      in: .common).autoconnect()
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.06)) { _ in
-            Canvas { ctx, size in
-                var c = ctx
-                drawSeqGrid(&c, size: size, engine: engine,
-                            cell: cell, rows: rows)
-            }
+        Canvas { ctx, _ in
+            _ = tick
+            var c = ctx
+            drawSeqGrid(&c, engine: engine, cell: cell, rows: rows)
         }
         .frame(width: 56 + 16 * cell, height: 3 + 13 * cell + 3)
         .contentShape(Rectangle())
+        .onReceive(timer) { _ in tick &+= 1 }
         .gesture(SpatialTapGesture().onEnded { v in
             let s = Int((v.location.x - 56) / cell)
             let row = Int((v.location.y - 3) / cell)
             if (0..<16).contains(s), (0..<13).contains(row) {
-                engine.seq.toggle(s, 72 - row)
+                let midi = 72 - row
+                let wasOn = engine.seq.contains(s, midi)
+                engine.seq.toggle(s, midi)
+                if !wasOn {
+                    // мгновенное превью ноты при постановке
+                    engine.chip.noteOn(midi: midi, dur: 0.3)
+                }
             }
         })
     }

@@ -10,19 +10,17 @@ struct MusitchApp: App {
         WindowGroup("musitch") {
             ContentView()
                 .environmentObject(engine)
-                .frame(minWidth: 1120, minHeight: 880)
+                .frame(minWidth: 1120, minHeight: 940)
                 .background(Color.bg)
         }
-        .windowResizability(.contentSize)
     }
 }
 
 struct ContentView: View {
     @EnvironmentObject var engine: Engine
-    @State private var status = ""
+    @State private var status = "нажми ▶ PLAY — это общий транспорт всего звука"
+    @State private var stutterHeld = false
 
-    private let ledColors: [Color] = [.ledG, .ledB, .ledR, .ledG,
-                                      .ledB, .ledR, .ledG, .ledB]
     private let paramNames: [String: (String, String)] = [
         "NOISE": ("TONE", "—"), "BUZZ": ("HUM", "SPARK"),
         "GLITCH": ("DENSITY", "REPEAT"), "TAPE": ("WEAR", "WOW"),
@@ -31,30 +29,32 @@ struct ContentView: View {
     ]
 
     var body: some View {
-        VStack(spacing: 10) {
-            header
+        ScrollView {
+            VStack(spacing: 10) {
+                header
 
-            HStack(spacing: 10) {
-                ScopeView(engine: engine)
-                SpectrumView(engine: engine)
-            }
-            .frame(height: 140)
-
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(),
-                                                         spacing: 8),
-                                     count: 4), spacing: 8) {
-                ForEach(Array(engine.sources.enumerated()),
-                        id: \.offset) { i, src in
-                    let names = paramNames[src.title] ?? ("P1", "P2")
-                    ModuleView(src: src, ledColor: ledColors[i],
-                               p1name: names.0, p2name: names.1)
+                HStack(spacing: 10) {
+                    ScopeView(engine: engine)
+                    SpectrumView(engine: engine)
                 }
-            }
+                .frame(height: 140)
 
-            fxPanel
-            seqPanel
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(),
+                                                             spacing: 8),
+                                         count: 4), spacing: 8) {
+                    ForEach(Array(engine.sources.enumerated()),
+                            id: \.offset) { _, src in
+                        let names = paramNames[src.title] ?? ("P1", "P2")
+                        ModuleView(src: src,
+                                   p1name: names.0, p2name: names.1)
+                    }
+                }
 
-            if !status.isEmpty {
+                SamplerPanel(sampler: engine.sampler)
+
+                fxPanel
+                seqPanel
+
                 HStack {
                     Text(status)
                         .font(monoFont(10, .regular))
@@ -62,9 +62,21 @@ struct ContentView: View {
                     Spacer()
                 }
             }
+            .padding(14)
         }
-        .padding(14)
         .background(Color.bg)
+        .task {
+            // скрытый демо-режим для автопроверки: MUSITCH_DEMO=1
+            if ProcessInfo.processInfo.environment["MUSITCH_DEMO"] == "1" {
+                engine.sources.first { $0.title == "NOISE" }?.on = true
+                engine.sources.first { $0.title == "DRIVE" }?.on = true
+                engine.seq.toggle(0, 72)
+                engine.seq.toggle(4, 67)
+                engine.seq.toggle(8, 64)
+                engine.seq.toggle(12, 60)
+                engine.playing = true
+            }
+        }
     }
 
     // ---------------------------------------------------------- шапка
@@ -81,7 +93,7 @@ struct ContentView: View {
                     .foregroundStyle(Color.muted)
             }
             Spacer()
-            Led(color: .ledG, lit: engine.playing, size: 10)
+            StateLed(on: engine.playing, size: 10)
             Button { engine.playing.toggle() } label: {
                 Text(engine.playing ? "■ STOP" : "▶ PLAY")
             }
@@ -106,7 +118,7 @@ struct ContentView: View {
             } label: {
                 Text("⤓ ЭКСПОРТ")
             }
-            .buttonStyle(TransportButton(active: false, color: .txt))
+            .buttonStyle(OptionButton())
         }
     }
 
@@ -114,33 +126,76 @@ struct ContentView: View {
 
     private var fxPanel: some View {
         Panel {
-            HStack(spacing: 18) {
-                Text("FX")
-                    .font(monoFont(11, .regular))
-                    .tracking(3)
-                    .foregroundStyle(Color.muted)
-                FXSlider(label: "BITCRUSH", value: Binding(
-                    get: { Double(engine.fx.crush) },
-                    set: { engine.fx.crush = Float($0) }))
-                FXSlider(label: "DISTORT", value: Binding(
-                    get: { Double(engine.fx.dist) },
-                    set: { engine.fx.dist = Float($0) }))
-                FXSlider(label: "DELAY", value: Binding(
-                    get: { Double(engine.fx.delay) },
-                    set: { engine.fx.delay = Float($0) }))
-                FXSlider(label: "FILTER", value: Binding(
-                    get: { Double(engine.fx.lp) },
-                    set: { engine.fx.lp = Float($0) }))
-                Spacer()
-                Text("MASTER")
-                    .font(monoFont(10, .regular))
-                    .foregroundStyle(Color.muted)
-                Slider(value: Binding(
-                    get: { Double(engine.master) },
-                    set: { engine.master = Float($0) }))
-                .tint(Color.txt)
-                .controlSize(.small)
-                .frame(width: 110)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 16) {
+                    Text("FX")
+                        .font(monoFont(11, .regular))
+                        .tracking(3)
+                        .foregroundStyle(Color.muted)
+                    FXSlider(label: "BITCRUSH", value: Binding(
+                        get: { Double(engine.fx.crush) },
+                        set: { engine.fx.crush = Float($0) }))
+                    FXSlider(label: "DISTORT", value: Binding(
+                        get: { Double(engine.fx.dist) },
+                        set: { engine.fx.dist = Float($0) }))
+                    FXSlider(label: "CUTOFF", value: Binding(
+                        get: { Double(engine.fx.cutoff) },
+                        set: { engine.fx.cutoff = Float($0) }))
+                    FXSlider(label: "RESO", value: Binding(
+                        get: { Double(engine.fx.reso) },
+                        set: { engine.fx.reso = Float($0) }))
+                    FXSlider(label: "VARISPEED", value: Binding(
+                        get: { Double(engine.fx.varispeed) },
+                        set: { engine.fx.varispeed = Float($0) }),
+                             range: -1...1, format: "%+.2f")
+                    Spacer()
+                    Text("MASTER")
+                        .font(monoFont(10, .regular))
+                        .foregroundStyle(Color.muted)
+                    Slider(value: Binding(
+                        get: { Double(engine.master) },
+                        set: { engine.master = Float($0) }))
+                    .tint(Color.txt)
+                    .controlSize(.small)
+                    .frame(width: 110)
+                }
+                HStack(spacing: 16) {
+                    FXSlider(label: "DELAY MIX", value: Binding(
+                        get: { Double(engine.fx.delayMix) },
+                        set: { engine.fx.delayMix = Float($0) }))
+                    FXSlider(label: "DELAY TIME", value: Binding(
+                        get: { Double(engine.fx.delayTime) },
+                        set: { engine.fx.delayTime = Float($0) }),
+                             range: 0.05...1.2, format: "%.2f s")
+                    FXSlider(label: "DELAY F/B", value: Binding(
+                        get: { Double(engine.fx.delayFb) },
+                        set: { engine.fx.delayFb = Float($0) }))
+                    VStack(spacing: 3) {
+                        Text("STUTTER")
+                            .font(monoFont(10, .regular))
+                            .foregroundStyle(Color.muted)
+                        Button(action: {}) {
+                            Text("◼ ДЕРЖИ")
+                                .padding(.horizontal, 6)
+                        }
+                        .buttonStyle(TransportButton(active: stutterHeld,
+                                                     color: .ledB))
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { _ in
+                                    stutterHeld = true
+                                    engine.fx.stutter = true
+                                }
+                                .onEnded { _ in
+                                    stutterHeld = false
+                                    engine.fx.stutter = false
+                                })
+                        Text("холд")
+                            .font(monoFont(9, .regular))
+                            .foregroundStyle(Color.muted)
+                    }
+                    Spacer()
+                }
             }
         }
     }
@@ -167,16 +222,21 @@ struct ContentView: View {
 struct FXSlider: View {
     let label: String
     @Binding var value: Double
+    var range: ClosedRange<Double> = 0...1
+    var format: String = "%.2f"
 
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 3) {
             Text(label)
                 .font(monoFont(10, .regular))
                 .foregroundStyle(Color.muted)
-            Slider(value: $value)
+            Slider(value: $value, in: range)
                 .tint(Color.txt)
                 .controlSize(.small)
                 .frame(width: 130)
+            Text(String(format: format, value))
+                .font(monoFont(9, .regular))
+                .foregroundStyle(Color.muted)
         }
     }
 }

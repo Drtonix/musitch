@@ -62,6 +62,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 echo "==> adhoc-подпись"
+xattr -cr "$APP"
 codesign --force --deep --sign - "$APP"
 
 echo "==> установка в /Applications"

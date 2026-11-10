@@ -61,63 +61,66 @@ final class ScopeStore {
 struct ScopeView: View {
     let engine: Engine
     @State private var store = ScopeStore()
+    @State private var tick = 0
+    private let timer = Timer.publish(every: 1.0 / 30, on: .main,
+                                      in: .common).autoconnect()
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1.0 / 30)) { _ in
-            Canvas { ctx, size in
-                let rect = CGRect(origin: .zero, size: size)
-                ctx.fill(Path(rect), with: .color(Color(white: 0.04)))
+        Canvas { ctx, size in
+            _ = tick   // зависимость от таймера — форсирует перерисовку
+            let rect = CGRect(origin: .zero, size: size)
+            ctx.fill(Path(rect), with: .color(Color(white: 0.04)))
 
-                // сетка
-                var grid = Path()
-                for gy in 1..<4 {
-                    let y = size.height * CGFloat(gy) / 4
-                    grid.move(to: CGPoint(x: 0, y: y))
-                    grid.addLine(to: CGPoint(x: size.width, y: y))
-                }
-                for gx in 1..<8 {
-                    let x = size.width * CGFloat(gx) / 8
-                    grid.move(to: CGPoint(x: x, y: 0))
-                    grid.addLine(to: CGPoint(x: x, y: size.height))
-                }
-                ctx.stroke(grid, with: .color(.white.opacity(0.11)),
-                           lineWidth: 1)
-
-                // снимок волны с послесвечением
-                let block = engine.lastL
-                let stride = max(1, block.count / 512)
-                var sig: [Float] = []
-                sig.reserveCapacity(512)
-                var i = 0
-                while i < block.count {
-                    sig.append(block[i])
-                    i += stride
-                }
-                store.trail.append(sig)
-                if store.trail.count > 3 { store.trail.removeFirst() }
-
-                for (idx, s) in store.trail.enumerated() {
-                    let alpha = 0.15 + 0.85 * Double(idx + 1)
-                        / Double(store.trail.count)
-                    var path = Path()
-                    for (j, v) in s.enumerated() {
-                        let x = size.width * CGFloat(j)
-                            / CGFloat(max(s.count - 1, 1))
-                        let y = size.height / 2
-                            - CGFloat(v) * size.height * 0.45
-                        if j == 0 { path.move(to: CGPoint(x: x, y: y)) }
-                        else { path.addLine(to: CGPoint(x: x, y: y)) }
-                    }
-                    ctx.stroke(path,
-                               with: .color(.white.opacity(alpha)),
-                               lineWidth: 1.2)
-                }
-
-                ctx.stroke(Path(rect.insetBy(dx: 0.5, dy: 0.5)),
-                           with: .color(Color.line), lineWidth: 1)
+            // сетка
+            var grid = Path()
+            for gy in 1..<4 {
+                let y = size.height * CGFloat(gy) / 4
+                grid.move(to: CGPoint(x: 0, y: y))
+                grid.addLine(to: CGPoint(x: size.width, y: y))
             }
+            for gx in 1..<8 {
+                let x = size.width * CGFloat(gx) / 8
+                grid.move(to: CGPoint(x: x, y: 0))
+                grid.addLine(to: CGPoint(x: x, y: size.height))
+            }
+            ctx.stroke(grid, with: .color(.white.opacity(0.11)),
+                       lineWidth: 1)
+
+            // снимок волны с послесвечением
+            let block = engine.lastL
+            let stride = max(1, block.count / 512)
+            var sig: [Float] = []
+            sig.reserveCapacity(512)
+            var i = 0
+            while i < block.count {
+                sig.append(block[i])
+                i += stride
+            }
+            store.trail.append(sig)
+            if store.trail.count > 3 { store.trail.removeFirst() }
+
+            for (idx, s) in store.trail.enumerated() {
+                let alpha = 0.15 + 0.85 * Double(idx + 1)
+                    / Double(store.trail.count)
+                var path = Path()
+                for (j, v) in s.enumerated() {
+                    let x = size.width * CGFloat(j)
+                        / CGFloat(max(s.count - 1, 1))
+                    let y = size.height / 2
+                        - CGFloat(v) * size.height * 0.45
+                    if j == 0 { path.move(to: CGPoint(x: x, y: y)) }
+                    else { path.addLine(to: CGPoint(x: x, y: y)) }
+                }
+                ctx.stroke(path,
+                           with: .color(.white.opacity(alpha)),
+                           lineWidth: 1.2)
+            }
+
+            ctx.stroke(Path(rect.insetBy(dx: 0.5, dy: 0.5)),
+                       with: .color(Color.line), lineWidth: 1)
         }
         .frame(minHeight: 130)
+        .onReceive(timer) { _ in tick &+= 1 }
     }
 }
 
@@ -135,51 +138,54 @@ final class SpectrumStore {
 struct SpectrumView: View {
     let engine: Engine
     @State private var store = SpectrumStore()
+    @State private var tick = 0
+    private let timer = Timer.publish(every: 1.0 / 30, on: .main,
+                                      in: .common).autoconnect()
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1.0 / 30)) { _ in
-            Canvas { ctx, size in
-                let rect = CGRect(origin: .zero, size: size)
-                ctx.fill(Path(rect), with: .color(Color(white: 0.04)))
+        Canvas { ctx, size in
+            _ = tick
+            let rect = CGRect(origin: .zero, size: size)
+            ctx.fill(Path(rect), with: .color(Color(white: 0.04)))
 
-                let mags = store.fft.magnitudes(engine.lastL)
-                let edges = store.bandEdges
-                var vals = [Float](repeating: 0, count: 32)
-                for b in 0..<32 {
-                    let a = edges[b]
-                    let c = max(edges[b + 1], a + 1)
-                    var s: Float = 0
-                    var cnt = 0
-                    var k = a
-                    while k < c && k < mags.count {
-                        s += mags[k]
-                        k += 1
-                        cnt += 1
-                    }
-                    vals[b] = s / Float(max(cnt, 1))
+            let mags = store.fft.magnitudes(engine.lastL)
+            let edges = store.bandEdges
+            var vals = [Float](repeating: 0, count: 32)
+            for b in 0..<32 {
+                let a = edges[b]
+                let c = max(edges[b + 1], a + 1)
+                var s: Float = 0
+                var cnt = 0
+                var k = a
+                while k < c && k < mags.count {
+                    s += mags[k]
+                    k += 1
+                    cnt += 1
                 }
-                let peakNow = vals.max() ?? 0
-                store.peak = max(store.peak * 0.98, peakNow, 1e-9)
-                let norm = store.peak
-                let bw = size.width / 32
-                for b in 0..<32 {
-                    let mag = log1pf(vals[b] / norm * 6) / log1pf(6)
-                    store.smooth[b] = max(mag, store.smooth[b] * 0.75)
-                    let v = store.smooth[b]
-                    if v <= 0.01 { continue }
-                    let bh = max(2, CGFloat(min(v, 1)) * (size.height - 8))
-                    let col: Color = v > 0.9 ? .ledR
-                        : (v > 0.75 ? .ledG : .txt)
-                    ctx.fill(Path(CGRect(x: CGFloat(b) * bw + 1,
-                                         y: size.height - bh,
-                                         width: bw - 2, height: bh)),
-                             with: .color(col))
-                }
-
-                ctx.stroke(Path(rect.insetBy(dx: 0.5, dy: 0.5)),
-                           with: .color(Color.line), lineWidth: 1)
+                vals[b] = s / Float(max(cnt, 1))
             }
+            let peakNow = vals.max() ?? 0
+            store.peak = max(store.peak * 0.98, peakNow, 1e-9)
+            let norm = store.peak
+            let bw = size.width / 32
+            for b in 0..<32 {
+                let mag = log1pf(vals[b] / norm * 6) / log1pf(6)
+                store.smooth[b] = max(mag, store.smooth[b] * 0.75)
+                let v = store.smooth[b]
+                if v <= 0.01 { continue }
+                let bh = max(2, CGFloat(min(v, 1)) * (size.height - 8))
+                let col: Color = v > 0.9 ? .ledR
+                    : (v > 0.75 ? .ledG : .txt)
+                ctx.fill(Path(CGRect(x: CGFloat(b) * bw + 1,
+                                     y: size.height - bh,
+                                     width: bw - 2, height: bh)),
+                         with: .color(col))
+            }
+
+            ctx.stroke(Path(rect.insetBy(dx: 0.5, dy: 0.5)),
+                       with: .color(Color.line), lineWidth: 1)
         }
         .frame(minHeight: 130)
+        .onReceive(timer) { _ in tick &+= 1 }
     }
 }
